@@ -78,7 +78,11 @@ def main():
                 deps=Deps(approval_mode=state.approval_mode, approve=approve, ui=ui, timeout=None)
                 result = callAgent(user_input, message_history=state.history, deps=deps)
 
-                messages = result.all_messages()
+                messages = []
+                if isinstance(result, str):
+                    ui.error(f"The agent returned a string: {result}")
+                else:
+                    messages = result.all_messages()
                 # Show all text parts of the messages
                 model_texts: list[str] = []
                 for m in messages:

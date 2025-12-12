@@ -1,7 +1,7 @@
 [project]
-name = "pydantic-agent"
+name = "cado"
 version = "0.1.0"
-description = "Add your description here"
+description = "Avacado Agent for personal uses"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,4 +11,5 @@ dependencies = [
     "pydantic-ai>=1.27.0",
     "pydantic-ai-slim[openai]>=1.27.0",
     "rich>=14.2.0",
+    "setuptools>=80.9.0",
 ]
