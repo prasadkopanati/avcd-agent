@@ -25,7 +25,7 @@ def main():
     # Prompt Session
     os.makedirs(os.path.dirname(PROMPT_HISTORY_PATH), exist_ok=True)
     history = FileHistory(PROMPT_HISTORY_PATH)
-    completer = WordCompleter(["exit", "q", "bye", "quit"], ignore_case=True)
+    completer = WordCompleter([], ignore_case=True)
     session = PromptSession(history=history, completer=completer)
 
     # Initialize AppState
@@ -50,8 +50,12 @@ def main():
         if not user_input.strip():
             continue
 
+        if user_input.lower() in ["exit", "q", "bye", "quit"]:
+            ui.info("User requested exit. Exiting...")
+            break
+
         # show UI with user input
-        ui.user_box(user_input)
+        #ui.user_box(user_input)
 
         # Call Agent
         try:
@@ -76,20 +80,21 @@ def main():
 
                 messages = result.all_messages()
                 # Show all text parts of the messages
-                model_texts = list[str] = []
+                model_texts: list[str] = []
                 for m in messages:
                     if getattr(m, "kind", None) == "response":
                         for p in m.parts:
                             if getattr(p, "part_kind", None) == "text" and p.content:
                                 model_texts.append(p.content)
                 if model_texts:
-                    ui.model_box("\n".join(model_texts))
+                    #ui.model_box("\n\n".join(model_texts))
+                    ui.model_box(result.output)
                 
                 # Tools executed automatically by pydantic_ai; 
                 # Append to history     
                 if state.history:
                     try:
-                        state.history += result.new_messages()
+                        state.history = state.history + result.new_messages()
                     except Exception as e:
                         ui.error(f"Error appending new messages to history: {e}")
                         state.history = messages
@@ -99,7 +104,7 @@ def main():
             ui.info("AbortGeneration detected. Exiting...")
             continue
         except Exception as e:
-            ui.error(f"Error: {e}")
+            ui.error(f"The agent encountered an error: {e}")
             continue
 
 

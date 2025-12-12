@@ -7,7 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 import logfire
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, List
+from pydantic_ai import ModelMessage
 
 # Database settings
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -174,9 +175,9 @@ avcCodingAgent = Agent(
                 tools=[list_directory, create_or_update_file, read_file, read_data_from_url]
             )
 
-def callAgent(prompt: str) -> str:
+def callAgent(prompt: str, message_history: List[ModelMessage] | None = None, deps: Deps | None = None) -> str:
     try:
-        result = avcCodingAgent.run_sync(prompt)
+        result = avcCodingAgent.run_sync(prompt, message_history=message_history, deps=deps)
         return result
     # Handle token limit errors
     except Exception as e:

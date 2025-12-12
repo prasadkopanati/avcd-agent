@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Gross Production of Crops and Livestock</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c5e1a;
+            text-align: center;
+            border-bottom: 2px solid #2c5e1a;
+            padding-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-style: italic;
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin: 20px 0;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .data-table th, .data-table td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        .data-table th {
+            background-color: #2c5e1a;
+            color: white;
+            font-weight: bold;
+        }
+        .data-table tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .data-table tr:hover {
+            background-color: #e8f5e8;
+        }
+        .info-panel {
+            background-color: #e8f5e8;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #2c5e1a;
+        }
+        .info-panel h3 {
+            margin-top: 0;
+            color: #2c5e1a;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Global Gross Production of Crops and Livestock</h1>
+        <p class="subtitle">A global ranking of top agricultural and livestock products by total production value</p>
+        
+        <div class="info-panel">
+            <h3>Project Information</h3>
+            <p><strong>Updated:</strong> October 13, 2025 03:18 AM UTC</p>
+            <p>This visualization shows the most valuable crops and livestock products worldwide based on total production value.</p>
+        </div>
+        
+        <h2>Total Production Value by Product (Top 10)</h2>
+        <div class="chart-container">
+            <canvas id="valueChart"></canvas>
+        </div>
+        
+        <h2>Production Volume by Product (Top 10)</h2>
+        <div class="chart-container">
+            <canvas id="volumeChart"></canvas>
+        </div>
+        
+        <h2>Top Products Data</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Rank</th>
+                    <th>Product</th>
+                    <th>Total Value (USD Billion)</th>
+                    <th>Production Volume (Metric Tons)</th>
+                    <th>Value per Metric Ton (USD)</th>
+                    <th>Top Producing Country</th>
+                </tr>
+            </thead>
+            <tbody id="dataTableBody">
+                <!-- Data will be populated by JavaScript -->
+            </tbody>
+        </table>
+        
+        <div class="footer">
+            <p>Data Source: Global Gross Production of Crops and Livestock Dataset</p>
+        </div>
+    </div>
+    
+    <script>
+        // Data from the JSON file
+        const data = {
+            "title":"Most Valuable Crops and Livestock Products Worldwide",
+            "subtitle":"A global ranking of top agricultural and livestock products by total production value, quantity, and leading producing countries.",
+            "updated_at":"October 13, 2025 03:18 AM UTC",
+            "data":[
+                {"rank":1,"product":"Rice, paddy","total_value_usd_billion":"$332","production_volume_metric_tons":"751,885,117","value_per_metric_ton_usd":"$442","top_country_value_usd_billion":"$117","top_producing_country":"Mainland China"},
+                {"rank":2,"product":"Pig, meat","total_value_usd_billion":"$280","production_volume_metric_tons":"118,956,327","value_per_metric_ton_usd":"$2,354","top_country_value_usd_billion":"$167","top_producing_country":"Mainland China"},
+                {"rank":3,"product":"Cattle, meat","total_value_usd_billion":"$269","production_volume_metric_tons":"64,568,004","value_per_metric_ton_usd":"$4,166","top_country_value_usd_billion":"$52.8","top_producing_country":"United States"},
+                {"rank":4,"product":"Cow's milk, whole fresh","total_value_usd_billion":"$238","production_volume_metric_tons":"665,596,536","value_per_metric_ton_usd":"$358","top_country_value_usd_billion":"$34.7","top_producing_country":"United States"},
+                {"rank":5,"product":"Chicken, meat","total_value_usd_billion":"$192","production_volume_metric_tons":"106,638,508","value_per_metric_ton_usd":"$1,800","top_country_value_usd_billion":"$27.4","top_producing_country":"United States"},
+                {"rank":6,"product":"Maize (corn)","total_value_usd_billion":"$191","production_volume_metric_tons":"1,126,990,585","value_per_metric_ton_usd":"$169","top_country_value_usd_billion":"$61.2","top_producing_country":"Mainland China"},
+                {"rank":7,"product":"Wheat","total_value_usd_billion":"$168","production_volume_metric_tons":"748,392,150","value_per_metric_ton_usd":"$224","top_country_value_usd_billion":"$50.7","top_producing_country":"Mainland China"},
+                {"rank":8,"product":"Soybeans","total_value_usd_billion":"$107","production_volume_metric_tons":"335,613,801","value_per_metric_ton_usd":"$319","top_country_value_usd_billion":"$40.7","top_producing_country":"United States"},
+                {"rank":9,"product":"Eggs, hen, in shell","total_value_usd_billion":"$93.6","production_volume_metric_tons":"74,180,272","value_per_metric_ton_usd":"$1,262","top_country_value_usd_billion":"$26.1","top_producing_country":"Mainland China"},
+                {"rank":10,"product":"Potatoes","total_value_usd_billion":"$92.7","production_volume_metric_tons":"356,952,488","value_per_metric_ton_usd":"$260","top_country_value_usd_billion":"$32.2","top_producing_country":"Mainland China"},
+                {"rank":11,"product":"Vegetables, not elsewhere specified","total_value_usd_billion":"$89.1","production_volume_metric_tons":"292,920,885","value_per_metric_ton_usd":"$304","top_country_value_usd_billion":"$53.6","top_producing_country":"Mainland China"},
+                {"rank":12,"product":"Tomatoes","total_value_usd_billion":"$87.9","production_volume_metric_tons":"178,158,747","value_per_metric_ton_usd":"$493","top_country_value_usd_billion":"$28.9","top_producing_country":"Mainland China"},
+                {"rank":13,"product":"Sugarcane","total_value_usd_billion":"$87.3","production_volume_metric_tons":"1,874,611,396","value_per_metric_ton_usd":"$47","top_country_value_usd_billion":"$40.9","top_producing_country":"Brazil"},
+                {"rank":14,"product":"Grapes","total_value_usd_billion":"$67.8","production_volume_metric_tons":"74,089,693","value_per_metric_ton_usd":"$915","top_country_value_usd_billion":"$14.4","top_producing_country":"France"},
+                {"rank":15,"product":"Seed cotton","total_value_usd_billion":"$56.7","production_volume_metric_tons":"67,622,193","value_per_metric_ton_usd":"$838","top_country_value_usd_billion":"$21.4","top_producing_country":"Mainland China"}
+            ]
+        };
+
+        // Process data for charts
+        const top10Data = data.data.slice(0, 10);
+        
+        // Extract labels and values for charts
+        const productLabels = top10Data.map(item => item.product);
+        const valueData = top10Data.map(item => parseFloat(item.total_value_usd_billion.replace('$', '')));
+        const volumeData = top10Data.map(item => parseFloat(item.production_volume_metric_tons.replace(/,/g, '')));
+        
+        // Create Total Value Chart
+        const valueCtx = document.getElementById('valueChart').getContext('2d');
+        new Chart(valueCtx, {
+            type: 'bar',
+            data: {
+                labels: productLabels,
+                datasets: [{
+                    label: 'Total Value (USD Billion)',
+                    data: valueData,
+                    backgroundColor: 'rgba(44, 94, 26, 0.7)',
+                    borderColor: 'rgba(44, 94, 26, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Value (USD Billion)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Product'
+                        }
+                    }
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Top 10 Agricultural Products by Total Value'
+                    }
+                }
+            }
+        });
+
+        // Create Production Volume Chart
+        const volumeCtx = document.getElementById('volumeChart').getContext('2d');
+        new Chart(volumeCtx, {
+            type: 'bar',
+            data: {
+                labels: productLabels,
+                datasets: [{
+                    label: 'Production Volume (Metric Tons)',
+                    data: volumeData,
+                    backgroundColor: 'rgba(52, 152, 219, 0.7)',
+                    borderColor: 'rgba(52, 152, 219, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Volume (Metric Tons)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Product'
+                        }
+                    }
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Top 10 Agricultural Products by Production Volume'
+                    }
+                }
+            }
+        });
+
+        // Populate data table
+        const dataTableBody = document.getElementById('dataTableBody');
+        data.data.forEach(item => {
+            const row = document.createElement('tr');
+            
+            // Format numbers for display
+            const formattedVolume = item.production_volume_metric_tons.replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1,');
+            const valuePerTon = item.value_per_metric_ton_usd.replace('$', '');
+            
+            row.innerHTML = `
+                <td>${item.rank}</td>
+                <td>${item.product}</td>
+                <td>${item.total_value_usd_billion}</td>
+                <td>${formattedVolume}</td>
+                <td>$${valuePerTon}</td>
+                <td>${item.top_producing_country}</td>
+            `;
+            
+            dataTableBody.appendChild(row);
+        });
+    </script>
+</body>
+</html>
