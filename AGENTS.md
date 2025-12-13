@@ -1,4 +1,4 @@
-# Elite Coding Agent
+# Cado Coding Agent
 
 ## Previous Instructions
 

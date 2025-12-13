@@ -57,7 +57,8 @@ def main():
         # show UI with user input
         #ui.user_box(user_input)
 
-        # Call Agent
+        # If a tool call fails, analyze the error and retry with a corrected request.
+        # Call Agent for a maximum of TOOL_CALL_MAX_RETRIES times
         try:
             with ui.thinking():
                 # Define approval function
@@ -76,13 +77,11 @@ def main():
                 
                 # Get approval from the user
                 deps=Deps(approval_mode=state.approval_mode, approve=approve, ui=ui, timeout=None)
+
                 result = callAgent(user_input, message_history=state.history, deps=deps)
 
-                messages = []
-                if isinstance(result, str):
-                    ui.error(f"The agent returned a string: {result}")
-                else:
-                    messages = result.all_messages()
+                messages = result.all_messages()
+
                 # Show all text parts of the messages
                 model_texts: list[str] = []
                 for m in messages:
@@ -104,6 +103,7 @@ def main():
                         state.history = messages
                 else:
                     state.history = messages
+
         except AbortGeneration:
             ui.info("AbortGeneration detected. Exiting...")
             continue

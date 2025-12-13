@@ -9,6 +9,11 @@ import logfire
 from dataclasses import dataclass
 from typing import Optional, Callable, List
 from pydantic_ai import ModelMessage
+from pydantic import BaseModel
+from pydantic_ai import ModelRequest
+import json
+
+TOOL_CALL_ERROR_MAX_RETRIES = int(os.getenv("TOOL_CALL_ERROR_MAX_RETRIES", 5))
 
 # Database settings
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -42,6 +47,15 @@ class Deps:
     ui: Any
     timeout: Optional[int] = None
 
+class ToolExecError(BaseModel):
+    """
+    Error raised when a tool execution fails
+    """
+    tool_name: str
+    error_type: str
+    message: str
+    attempted_input: dict
+
 llamacp_model = OpenAIChatModel(
     model_name=MODEL_NAME, 
     provider=OpenAIProvider(
@@ -49,7 +63,7 @@ llamacp_model = OpenAIChatModel(
         api_key=OPENAI_API_KEY
     )
 )
-
+# Abstract System Prompt into an applicaation wide constant and import the constant from the main module
 SYSTEM_PROMPT = (
     "You are an AI Coding Agent\n"
     "Your goal is to act on user requests to write code.\n"
@@ -57,8 +71,10 @@ SYSTEM_PROMPT = (
     "You will be given a codebase and you will need to write the code to fulfill the request.\n"
     "You operate in a loop, repeatedly calling tools until you have completed the user request.\n"
     "You must explaing your thought process and the steps you are taking to complete the user request.\n"
-    "You must use the provided tools to interact with the environment, specifically the file system."
-    "If no function is available, then you can use your own knowledge and do not say anything about unavailable functions"
+    "You must use the provided tools to interact with the environment, specifically the file system.\n"
+    "If no function is available, then you can use your own knowledge and do not say anything about unavailable functions\n"
+    "If a tool fails, analyze the error and retry with a corrected request.\n"
+    "If a tool fails:\n 1. Identify why it failed\n 2. Modify only the failing parameters\n 3. Do not repeat the same failing call\n"
     "If you are asked to read an environment file and print the contents, then you should mask the passwords and other sensitive information."
 )
 
@@ -82,12 +98,32 @@ def create_or_update_file(file_path:str, content:str) -> None:
     
     return f"File {file_path} created successfully"
 
-def read_file(file_path:str) -> str:
+def read_file(file_path: str) -> str:
     """
     Read the contents of a file
     """
-    with open(file_path, "r") as file:
-        return file.read()
+    print(f"Reading file: {file_path}")
+    try:
+        with open(file_path, "r") as file:
+            return file.read()
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_file",
+                error_type="FileNotFoundError",
+                message=f"The file {file_path} does not exist. Use the list_directory tool to check the files in the directory and try again.",
+                attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_file",
+                error_type=type(e).__name__,
+                message=f"An error occurred while reading the file {file_path}",
+                attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
 
 def read_website(url:str) -> str:
     """
@@ -175,10 +211,55 @@ avcCodingAgent = Agent(
                 tools=[list_directory, create_or_update_file, read_file, read_data_from_url]
             )
 
-def callAgent(prompt: str, message_history: List[ModelMessage] | None = None, deps: Deps | None = None) -> str:
-    try:
-        result = avcCodingAgent.run_sync(prompt, message_history=message_history, deps=deps)
-        return result
-    # Handle token limit errors
-    except Exception as e:
-        return f"Error: {e}"
+def callAgent(
+    prompt: str,
+    message_history: List[ModelMessage] | None = None,
+    deps: Deps | None = None,
+) -> str:
+    tool_error = None
+
+    for attempt in range(1, TOOL_CALL_ERROR_MAX_RETRIES + 1):
+        try:
+            result = avcCodingAgent.run_sync(
+                prompt, message_history=message_history, deps=deps
+            )
+            return result
+        except RuntimeError as e:
+            tool_error = str(e)
+            try:
+                error_object = json.loads(tool_error)
+                error_summary = (
+                    f"Tool: {error_object['tool_name']} \n"
+                    f"Error Type: {error_object['error_type']} \n"
+                    f"Error Message: {error_object['message']} \n"
+                    f"Attempted Input: {error_object['attempted_input']} \n"
+                )
+            except json.JSONDecodeError:
+                error_summary = tool_error
+
+            if attempt == TOOL_CALL_ERROR_MAX_RETRIES:
+                raise RuntimeError(
+                    f"Tool call failed after {TOOL_CALL_ERROR_MAX_RETRIES} retries. \nLast error: \n{tool_error}"
+                )
+
+            # Analyze the tool error and retry with a corrected request
+            message_history.append(
+                ModelRequest.user_text_prompt(
+                    f"""
+                    The previous tool call failed with the following error:
+                    {error_summary}
+
+                    Please retry with a corrected or alternative request.
+
+                    Instructions:
+                        1. Identify why the tool call failed.
+                        2. Modify only the failing parameters.
+                        3. Do NOT repeat the same failing call.
+                        4. If retry is impossible, explain why.
+                        5. If the error is not clear, ask the user for clarification.
+                    
+                    """
+                )
+            )
+        except Exception as e:
+            raise RuntimeError(f"An error occurred while calling the agent: {e}")
