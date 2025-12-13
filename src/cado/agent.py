@@ -12,6 +12,12 @@ from pydantic_ai import ModelMessage
 from pydantic import BaseModel
 from pydantic_ai import ModelRequest
 import json
+from exa_py import Exa
+from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 TOOL_CALL_ERROR_MAX_RETRIES = int(os.getenv("TOOL_CALL_ERROR_MAX_RETRIES", 5))
 
@@ -34,6 +40,12 @@ API_URL = os.getenv("API_URL", "https://api.example.com")
 # Application settings
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 PORT = int(os.getenv("PORT", "3000"))
+
+# Exa API key
+EXA_API_KEY = os.getenv("EXA_API_KEY")
+
+# Initialize Exa client
+exa_client = Exa(api_key=EXA_API_KEY)
 
 @dataclass
 class Deps:
@@ -63,10 +75,24 @@ llamacp_model = OpenAIChatModel(
         api_key=OPENAI_API_KEY
     )
 )
+
+# Get current date and time in string format
+CURRENT_DATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+# Get current IP address by calling the IP Geolocation API
+IP_ADDRESS = requests.get("https://api.ipify.org?format=json").json()["ip"]
+# Get current geographic location by calling the IP Geolocation API in string format
+CURRENT_GEOGRAPHIC_LOCATION = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["city"]
+# Get current ISP by calling the IP Geolocation API in string format
+CURRENT_REGION = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["region"]
+# Get current country by calling the IP Geolocation API in string format
+CURRENT_COUNTRY = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["country"]
+
 # Abstract System Prompt into an applicaation wide constant and import the constant from the main module
 SYSTEM_PROMPT = (
     "You are an AI Coding Agent\n"
     "Your goal is to act on user requests to write code.\n"
+    "Strip off the double asterisks **, double hashes ##, single hashes #, single asterisks * in your responses to the user.\n"
     "You will be given a user request and you will need to write the code to fulfill the request.\n"
     "You will be given a codebase and you will need to write the code to fulfill the request.\n"
     "You operate in a loop, repeatedly calling tools until you have completed the user request.\n"
@@ -76,6 +102,7 @@ SYSTEM_PROMPT = (
     "If a tool fails, analyze the error and retry with a corrected request.\n"
     "If a tool fails:\n 1. Identify why it failed\n 2. Modify only the failing parameters\n 3. Do not repeat the same failing call\n"
     "If you are asked to read an environment file and print the contents, then you should mask the passwords and other sensitive information."
+    f"Note that the current date and time is {CURRENT_DATE_TIME}, the current IP address is {IP_ADDRESS}, the current geographic location is {CURRENT_GEOGRAPHIC_LOCATION}, the current region is {CURRENT_REGION}, the current country is {CURRENT_COUNTRY}."
 )
 
 # Coonfigure logfire
@@ -124,6 +151,19 @@ def read_file(file_path: str) -> str:
                 attempted_input={"file_path": file_path},
             ).model_dump_json()
         )
+
+# Search web for a given query and return the contents of the top results
+def exa_search_tool(query: str): 
+    """
+    Searches the web for information related to the given query and returns the contents of the top results.
+    """
+    results = exa_client.search_and_contents(
+        query,
+        num_results=int(os.getenv("EXA_SEARCH_NUM_RESULTS", 3)),
+        type="auto",
+        text=True
+    )
+    return results.results
 
 def read_website(url:str) -> str:
     """
@@ -186,7 +226,7 @@ def read_pdf_from_url(url:str) -> str:
 # and return the data as a string
 def read_data_from_url(url:str) -> str:
     """
-    Read data from a URL based on the file extension
+    Given a URL, read data from a URL based on the file extension
     If the file extension is not supported, then return the contents of the website
     Supported file extensions: .json, .csv, .xml, .yaml, .excel, .pdf
     """
@@ -208,14 +248,20 @@ def read_data_from_url(url:str) -> str:
 avcCodingAgent = Agent(
                 model=llamacp_model, 
                 system_prompt=SYSTEM_PROMPT,
-                tools=[list_directory, create_or_update_file, read_file, read_data_from_url]
+                tools=[
+                    list_directory, 
+                    create_or_update_file, 
+                    read_file, 
+                    read_data_from_url, 
+                    exa_search_tool
+                    ]
             )
 
 def callAgent(
     prompt: str,
     message_history: List[ModelMessage] | None = None,
     deps: Deps | None = None,
-) -> str:
+    ) -> str:
     tool_error = None
 
     for attempt in range(1, TOOL_CALL_ERROR_MAX_RETRIES + 1):
@@ -257,7 +303,6 @@ def callAgent(
                         3. Do NOT repeat the same failing call.
                         4. If retry is impossible, explain why.
                         5. If the error is not clear, ask the user for clarification.
-                    
                     """
                 )
             )

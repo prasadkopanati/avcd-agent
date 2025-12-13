@@ -6,10 +6,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "bs4>=0.0.2",
+    "exa-py>=2.0.1",
     "logfire>=4.16.0",
     "prompt-toolkit>=3.0.52",
     "pydantic-ai>=1.27.0",
     "pydantic-ai-slim[openai]>=1.27.0",
+    "python-dotenv>=1.2.1",
     "rich>=14.2.0",
     "setuptools>=80.9.0",
 ]

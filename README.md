@@ -43,3 +43,12 @@ The project follows these coding style guidelines:
 ## Development Guidelines
 
 Refer to `AGENTS.md` for detailed development instructions and coding standards.
+
+## Self-Healing Agent
+
+Encode this policy in the system prompt and tool descriptions.
+
+- If file not found → list directory
+- If permission denied → try alternative path
+- If API error → inspect error code and backoff
+
