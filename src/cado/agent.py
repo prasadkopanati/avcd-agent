@@ -103,11 +103,32 @@ SYSTEM_PROMPT = (
     "If a tool fails:\n 1. Identify why it failed\n 2. Modify only the failing parameters\n 3. Do not repeat the same failing call\n"
     "If you are asked to read an environment file and print the contents, then you should mask the passwords and other sensitive information."
     f"Note that the current date and time is {CURRENT_DATE_TIME}, the current IP address is {IP_ADDRESS}, the current geographic location is {CURRENT_GEOGRAPHIC_LOCATION}, the current region is {CURRENT_REGION}, the current country is {CURRENT_COUNTRY}."
+    "\n\n"
+    "## File System Navigation Instructions\n"
+    "When working with files and directories:\n"
+    "1. Use the get_current_directory tool to determine your starting location.\n"
+    "2. To read files in nested directories, you have two options:\n"
+    "   a. Use absolute paths (e.g., /dir1/dir2/abc.html) - this is the most reliable method\n"
+    "   b. Navigate step-by-step using change_directory tool, then read the file\n"
+    "3. Always verify directory existence using list_directory before attempting to access files in nested paths.\n"
+    "4. If you receive a FileNotFoundError when trying to read a file in a nested directory:\n"
+    "   - First check your current directory with get_current_directory\n"
+    "   - Then use list_directory on each level of the path to verify directories exist\n"
+    "   - Consider using change_directory to navigate to the target directory first\n"
+    "5. The read_file tool automatically normalizes paths, so you can use relative paths like ../sibling/file.txt or paths with .. and .\n"
+    "6. Use absolute paths whenever possible for better reliability and clarity.\n"
 )
 
 # Coonfigure logfire
 logfire.configure()
 logfire.instrument_pydantic_ai()
+
+def get_current_directory() -> str:
+    """
+    Get the current working directory
+    """
+    current_dir = os.getcwd()
+    return f"Current working directory: {current_dir}"
 
 def list_directory(directory:str) -> list[str]:
     """
@@ -137,15 +158,35 @@ def read_file(file_path: str) -> str:
     Read the contents of a file
     """
     print(f"Reading file: {file_path}")
+    # Normalize the path to handle relative paths and resolve .., ., etc.
+    normalized_path = os.path.abspath(os.path.normpath(file_path))
     try:
-        with open(file_path, "r") as file:
+        with open(normalized_path, "r") as file:
             return file.read()
     except FileNotFoundError as e:
         raise RuntimeError(
             ToolExecError(
                 tool_name="read_file",
                 error_type="FileNotFoundError",
-                message=f"The file {file_path} does not exist. Use the list_directory tool to check the files in the directory and try again.",
+                message=f"The file {file_path} does not exist. Try using the get_current_directory tool to see your starting point, then use list_directory on each level of the directory path to verify that each directory exists before attempting to read the file. Use absolute paths (starting with / or the drive letter) for better reliability.",
+                attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
+    except PermissionError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_file",
+                error_type="PermissionError",
+                message=f"Permission denied when trying to read the file {file_path}. You may need to check file permissions or try a different path.",
+                attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
+    except IsADirectoryError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_file",
+                error_type="IsADirectoryError",
+                message=f"The path {file_path} is a directory, not a file. Use list_directory to list the contents of the directory.",
                 attempted_input={"file_path": file_path},
             ).model_dump_json()
         )
@@ -154,8 +195,56 @@ def read_file(file_path: str) -> str:
             ToolExecError(
                 tool_name="read_file",
                 error_type=type(e).__name__,
-                message=f"An error occurred while reading the file {file_path}",
+                message=f"An error occurred while reading the file {file_path}: {str(e)}",
                 attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
+
+def change_directory(directory: str) -> str:
+    """
+    Change the current working directory
+    Use this tool to navigate between directories when you need to access files in different locations.
+    You can use absolute paths (e.g., /home/user/project) or relative paths (e.g., ../sibling_dir).
+    """
+    try:
+        # Normalize and resolve the path
+        new_dir = os.path.abspath(os.path.normpath(directory))
+        os.chdir(new_dir)
+        return f"Changed directory to: {new_dir}"
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="change_directory",
+                error_type="FileNotFoundError",
+                message=f"The directory {directory} does not exist. Use list_directory on the parent directory to see available options.",
+                attempted_input={"directory": directory},
+            ).model_dump_json()
+        )
+    except NotADirectoryError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="change_directory",
+                error_type="NotADirectoryError",
+                message=f"The path {directory} is not a directory, it's a file. Use list_directory on the parent directory to see available options.",
+                attempted_input={"directory": directory},
+            ).model_dump_json()
+        )
+    except PermissionError as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="change_directory",
+                error_type="PermissionError",
+                message=f"Permission denied when trying to access the directory {directory}. You may need to check directory permissions.",
+                attempted_input={"directory": directory},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="change_directory",
+                error_type=type(e).__name__,
+                message=f"An error occurred while changing directory to {directory}: {str(e)}",
+                attempted_input={"directory": directory},
             ).model_dump_json()
         )
 
@@ -256,10 +345,12 @@ avcCodingAgent = Agent(
                 model=llamacp_model, 
                 system_prompt=SYSTEM_PROMPT,
                 tools=[
+                    get_current_directory,
                     list_directory, 
                     create_directory, 
                     create_or_update_file, 
                     read_file, 
+                    change_directory,
                     read_data_from_url, 
                     exa_search_tool
                     ]
