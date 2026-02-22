@@ -116,6 +116,13 @@ def list_directory(directory:str) -> list[str]:
     contents= os.listdir(directory)
     return contents
 
+def create_directory(directory:str) -> None:
+    """
+    Create a directory
+    """
+    os.makedirs(directory, exist_ok=True)
+    return f"Directory {directory} created successfully"
+
 def create_or_update_file(file_path:str, content:str) -> None:
     """
     Create or update a file with the given content
@@ -250,6 +257,7 @@ avcCodingAgent = Agent(
                 system_prompt=SYSTEM_PROMPT,
                 tools=[
                     list_directory, 
+                    create_directory, 
                     create_or_update_file, 
                     read_file, 
                     read_data_from_url, 

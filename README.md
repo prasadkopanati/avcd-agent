@@ -52,3 +52,28 @@ Encode this policy in the system prompt and tool descriptions.
 - If permission denied → try alternative path
 - If API error → inspect error code and backoff
 
+## Deploy as pip package
+From root of the project (where .toml file exists)
+    python3 -m venv venv
+#### On Linux/macOS
+    source venv/bin/activate
+#### On Windows
+    .\venv\Scripts\activate
+#### PIP install locally
+    python3 -m pip install --editable .
+##### or using the shorthand flag
+    python3 -m pip install -e .
+#### PIP3 list to see cado
+    pip3 list
+
+#### Create a script file cado.sh
+    #!/bin/bash
+    uv run /Users/ninja/Code/ML-AI/pydantic-agent/src/cado/main.py
+#### Save this to new directory 
+    mkdir util_scripts
+    cd util_scripts
+    touch cado.sh
+#### Add alias to PATH (bashrc or zshrc)
+    alias cado=/PATH_TO_/cado.sh
+#### Source bashrc or zshrc to access cado
+    cado
