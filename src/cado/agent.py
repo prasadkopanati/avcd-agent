@@ -7,12 +7,12 @@ import requests
 from bs4 import BeautifulSoup
 import logfire
 from dataclasses import dataclass
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Dict, Union
 from pydantic_ai import ModelMessage
 from pydantic import BaseModel
 from pydantic_ai import ModelRequest
 import json
-from exa_py import Exa
+import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -41,11 +41,33 @@ API_URL = os.getenv("API_URL", "https://api.example.com")
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 PORT = int(os.getenv("PORT", "3000"))
 
-# Exa API key
+# Web Search Settings
+# Search provider: "exa", "firecrawl", "tavily", "brave", "openserp", or "google_custom"
+SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "exa")
+
+# Exa API
 EXA_API_KEY = os.getenv("EXA_API_KEY")
 
-# Initialize Exa client
-exa_client = Exa(api_key=EXA_API_KEY)
+# Firecrawl API
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+FIRECRAWL_BASE_URL = os.getenv("FIRECRAWL_BASE_URL", "https://api.firecrawl.dev")
+
+# Tavily API
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+# Brave Search API
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
+
+# OpenSerp (self-hosted)
+OPENSERP_BASE_URL = os.getenv("OPENSERP_BASE_URL", "http://localhost:7000")
+
+# Google Custom Search API
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Search configuration
+DEFAULT_SEARCH_NUM_RESULTS = int(os.getenv("DEFAULT_SEARCH_NUM_RESULTS", 5))
+SEARCH_QUERY_TYPE = os.getenv("SEARCH_QUERY_TYPE", "web")  # web, academic, news, etc.
 
 @dataclass
 class Deps:
@@ -117,9 +139,18 @@ SYSTEM_PROMPT = (
     "   - Consider using change_directory to navigate to the target directory first\n"
     "5. The read_file tool automatically normalizes paths, so you can use relative paths like ../sibling/file.txt or paths with .. and .\n"
     "6. Use absolute paths whenever possible for better reliability and clarity.\n"
+    "\n\n"
+    "## Web Search Instructions\n"
+    "When searching the web for information:\n"
+    f"- The current search provider is: {SEARCH_PROVIDER}\n"
+    "- Available search providers include: exa, firecrawl, tavily, brave, openserp, google_custom\n"
+    "- Use the web_search tool for general queries\n"
+    "- For specific URLs, use the read_website tool\n"
+    "- Consider using multiple search providers for comprehensive results\n"
+    "- Always verify information from multiple sources when accuracy is critical"
 )
 
-# Coonfigure logfire
+# Configure logfire
 logfire.configure()
 logfire.instrument_pydantic_ai()
 
@@ -248,119 +279,505 @@ def change_directory(directory: str) -> str:
             ).model_dump_json()
         )
 
-# Search web for a given query and return the contents of the top results
-def exa_search_tool(query: str): 
-    """
-    Searches the web for information related to the given query and returns the contents of the top results.
-    """
-    results = exa_client.search_and_contents(
-        query,
-        num_results=int(os.getenv("EXA_SEARCH_NUM_RESULTS", 3)),
-        type="auto",
-        text=True
-    )
-    return results.results
+# ============== WEB SEARCH IMPLEMENTATIONS ==============
 
-def read_website(url:str) -> str:
+def exa_search_tool(query: str) -> List[Dict[str, Any]]:
     """
-    Read the contents of a website given the url for the website
+    Searches the web for information related to the given query using Exa.
+    Returns a list of search results with content.
     """
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    return soup.get_text()
+    try:
+        from exa_py import Exa
+        exa_client = Exa(api_key=EXA_API_KEY)
+        results = exa_client.search_and_contents(
+            query,
+            num_results=DEFAULT_SEARCH_NUM_RESULTS,
+            type="auto",
+            text=True
+        )
+        return [result.model_dump() if hasattr(result, 'model_dump') else result for result in results.results]
+    except ImportError:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="exa_search_tool",
+                error_type="ImportError",
+                message="Exa Py library not installed. Install with: pip install exa-py",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="exa_search_tool",
+                error_type=type(e).__name__,
+                message=f"Exa search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+def firecrawl_search_tool(query: str) -> List[Dict[str, Any]]:
+    """
+    Searches the web using Firecrawl API - combines search + extraction.
+    Returns search results with full page content.
+    """
+    try:
+        import firecrawl
+        app = firecrawl.FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+        
+        # Use Firecrawl's search endpoint
+        results = app.search(
+            query,
+            limit=DEFAULT_SEARCH_NUM_RESULTS,
+            scrape_options={"formats": ["markdown"]}
+        )
+        
+        # Convert results to dictionary format
+        search_results = []
+        for result in results.web if hasattr(results, 'web') else []:
+            if hasattr(result, 'model_dump'):
+                search_results.append(result.model_dump())
+            elif hasattr(result, '__dict__'):
+                search_results.append(result.__dict__)
+            else:
+                search_results.append(result)
+        
+        return search_results
+    except ImportError:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="firecrawl_search_tool",
+                error_type="ImportError",
+                message="Firecrawl library not installed. Install with: pip install firecrawl",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="firecrawl_search_tool",
+                error_type=type(e).__name__,
+                message=f"Firecrawl search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+def tavily_search_tool(query: str) -> List[Dict[str, Any]]:
+    """
+    Searches the web using Tavily API - optimized for AI agents and RAG.
+    Returns search results with AI-optimized snippets.
+    """
+    try:
+        import requests
+        
+        response = requests.post(
+            f"{os.getenv('TAVILY_API_BASE_URL', 'https://api.tavily.com')}/search",
+            json={
+                "query": query,
+                "max_results": DEFAULT_SEARCH_NUM_RESULTS,
+                "api_key": TAVILY_API_KEY
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Format results
+        return [
+            {
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "content": result.get("content", ""),
+                "score": result.get("score", 0)
+            }
+            for result in data.get("results", [])
+        ]
+    except ImportError:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="tavily_search_tool",
+                error_type="ImportError",
+                message="Requests library not available",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="tavily_search_tool",
+                error_type=type(e).__name__,
+                message=f"Tavily search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+def brave_search_tool(query: str) -> List[Dict[str, Any]]:
+    """
+    Searches the web using Brave Search API - independent search index.
+    Returns search results with multiple snippets per result.
+    """
+    try:
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": BRAVE_API_KEY
+        }
+        
+        params = {"q": query}
+        
+        response = requests.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Format results
+        results = []
+        if "web" in data and "results" in data["web"]:
+            for result in data["web"]["results"]:
+                results.append({
+                    "title": result.get("title", ""),
+                    "url": result.get("url", ""),
+                    "content": result.get("description", ""),
+                    "snippets": result.get("snippets", [])
+                })
+        
+        return results[:DEFAULT_SEARCH_NUM_RESULTS]
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="brave_search_tool",
+                error_type=type(e).__name__,
+                message=f"Brave search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+def openserp_search_tool(query: str) -> List[Dict[str, Any]]:
+    """
+    Searches the web using OpenSerp - self-hosted, open-source solution.
+    Supports multiple search engines (Google, Bing, DuckDuckGo, etc.).
+    """
+    try:
+        response = requests.get(
+            f"{OPENSERP_BASE_URL}/mega/search",
+            params={
+                "text": query,
+                "limit": DEFAULT_SEARCH_NUM_RESULTS,
+                "engines": os.getenv("OPENSERP_ENGINES", "google,bing,duckduckgo")
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        return data
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="openserp_search_tool",
+                error_type=type(e).__name__,
+                message=f"OpenSerp search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+def google_custom_search_tool(query: str) -> List[Dict[str, Any]]:
+    """
+    Searches the web using Google Custom Search API.
+    Limited to custom search indexes (100 free queries/day).
+    """
+    try:
+        params = {
+            "key": GOOGLE_API_KEY,
+            "cx": GOOGLE_CSE_ID,
+            "q": query,
+            "num": DEFAULT_SEARCH_NUM_RESULTS
+        }
+        
+        response = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params=params,
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Format results
+        results = []
+        for item in data.get("items", []):
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "content": item.get("snippet", ""),
+                "display_link": item.get("displayLink", "")
+            })
+        
+        return results
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="google_custom_search_tool",
+                error_type=type(e).__name__,
+                message=f"Google Custom Search failed: {str(e)}",
+                attempted_input={"query": query},
+            ).model_dump_json()
+        )
+
+# ============== SELECT SEARCH PROVIDER ==============
+
+def select_search_provider() -> callable:
+    """
+    Selects the appropriate search function based on configuration.
+    Returns the search function to use.
+    """
+    provider_map = {
+        "exa": exa_search_tool,
+        "firecrawl": firecrawl_search_tool,
+        "tavily": tavily_search_tool,
+        "brave": brave_search_tool,
+        "openserp": openserp_search_tool,
+        "google_custom": google_custom_search_tool
+    }
+    
+    provider = SEARCH_PROVIDER.lower()
+    
+    if provider not in provider_map:
+        # Default to exa if provider not found
+        print(f"Warning: Unknown search provider '{provider}'. Defaulting to 'exa'")
+        return exa_search_tool
+    
+    # Check if required environment variables are present
+    required_vars = {
+        "exa": ["EXA_API_KEY"],
+        "firecrawl": ["FIRECRAWL_API_KEY"],
+        "tavily": ["TAVILY_API_KEY"],
+        "brave": ["BRAVE_API_KEY"],
+        "openserp": [],
+        "google_custom": ["GOOGLE_API_KEY", "GOOGLE_CSE_ID"]
+    }
+    
+    missing_vars = [var for var in required_vars.get(provider, []) if not os.getenv(var)]
+    
+    if missing_vars:
+        raise RuntimeError(
+            f"Missing required environment variables for {provider}: {', '.join(missing_vars)}"
+        )
+    
+    return provider_map[provider]
+
+# ============== MAIN WEB SEARCH FUNCTION ==============
+
+def web_search(query: str) -> List[Dict[str, Any]]:
+    """
+    Main web search function that routes to the configured search provider.
+    This is the function that should be used by the agent.
+    """
+    search_func = select_search_provider()
+    return search_func(query)
+
+# ============== WEBSITE READING FUNCTIONS ==============
+
+def read_website(url: str) -> str:
+    """
+    Read the contents of a website given the url for the website.
+    Returns cleaned text content.
+    """
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # Get text and clean it up
+        text = soup.get_text()
+        
+        # Break into lines and remove leading/trailing space on each
+        lines = (line.strip() for line in text.splitlines())
+        # Break multi-headlines into a line each
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        # Drop blank lines
+        text = ' '.join(chunk for chunk in chunks if chunk)
+        
+        return text[:10000]  # Limit to 10k characters to avoid token overflow
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_website",
+                error_type=type(e).__name__,
+                message=f"Failed to read website {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read JSON data from a URL
-def read_json_from_url(url:str) -> str:
+def read_json_from_url(url: str) -> str:
     """
-    Read JSON data from a URL
+    Read JSON data from a URL and return formatted string.
     """
-    response = requests.get(url)
-    return response.json()
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return json.dumps(data, indent=2)
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_json_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read JSON from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read CSV data from a URL
-def read_csv_from_url(url:str) -> str:
+def read_csv_from_url(url: str) -> str:
     """
-    Read CSV data from a URL
+    Read CSV data from a URL.
     """
-    response = requests.get(url)
-    return response.text
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.text[:10000]  # Limit to 10k characters
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_csv_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read CSV from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read XML data from a URL
-def read_xml_from_url(url:str) -> str:
+def read_xml_from_url(url: str) -> str:
     """
-    Read XML data from a URL
+    Read XML data from a URL and return formatted string.
     """
-    response = requests.get(url)
-    return response.text
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.text[:10000]  # Limit to 10k characters
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_xml_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read XML from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read YAML data from a URL
-def read_yaml_from_url(url:str) -> str:
+def read_yaml_from_url(url: str) -> str:
     """
-    Read YAML data from a URL
+    Read YAML data from a URL and return formatted string.
     """
-    response = requests.get(url)
-    return response.text
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.text[:10000]  # Limit to 10k characters
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_yaml_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read YAML from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read Excel data from a URL
-def read_excel_from_url(url:str) -> str:
+def read_excel_from_url(url: str) -> str:
     """
-    Read Excel data from a URL
+    Read Excel data from a URL.
+    Note: This returns raw bytes, for actual parsing use pandas or openpyxl.
     """
-    response = requests.get(url)
-    return response.text
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return f"Excel file received ({len(response.content)} bytes). Use pandas to parse."
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_excel_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read Excel from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Read PDF data from a URL
-def read_pdf_from_url(url:str) -> str:
+def read_pdf_from_url(url: str) -> str:
     """
-    Read PDF data from a URL
+    Read PDF data from a URL and return text content.
     """
-    response = requests.get(url)
-    return response.text
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return f"PDF file received ({len(response.content)} bytes). Use PyPDF2 or pdfplumber to extract text."
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="read_pdf_from_url",
+                error_type=type(e).__name__,
+                message=f"Failed to read PDF from {url}: {str(e)}",
+                attempted_input={"url": url},
+            ).model_dump_json()
+        )
 
 # Refactor various reading functions into one function 
 # with conditional logic to determine the type of data to read
 # and return the data as a string
-def read_data_from_url(url:str) -> str:
+def read_data_from_url(url: str) -> str:
     """
-    Given a URL, read data from a URL based on the file extension
-    If the file extension is not supported, then return the contents of the website
-    Supported file extensions: .json, .csv, .xml, .yaml, .excel, .pdf
+    Given a URL, read data from a URL based on the file extension.
+    If the file extension is not supported, then return the contents of the website.
+    Supported file extensions: .json, .csv, .xml, .yaml, .yml, .excel, .xlsx, .pdf
     """
-    if url.endswith(".json"):
+    url_lower = url.lower()
+    
+    if url_lower.endswith(".json"):
         return read_json_from_url(url)
-    elif url.endswith(".csv"):
-        return read_website(url)
-    elif url.endswith(".xml"):
-        return read_website(url)
-    elif url.endswith(".yaml"):
-        return read_website(url)
-    elif url.endswith(".excel"):
-        return read_website(url)
-    elif url.endswith(".pdf"):
-        return read_website(url)
+    elif url_lower.endswith(".csv"):
+        return read_csv_from_url(url)
+    elif url_lower.endswith(".xml"):
+        return read_xml_from_url(url)
+    elif url_lower.endswith(".yaml") or url_lower.endswith(".yml"):
+        return read_yaml_from_url(url)
+    elif url_lower.endswith(".excel") or url_lower.endswith(".xlsx"):
+        return read_excel_from_url(url)
+    elif url_lower.endswith(".pdf"):
+        return read_pdf_from_url(url)
     else:
         return read_website(url)
 
+# ============== AGENT INITIALIZATION ==============
+
 avcCodingAgent = Agent(
-                model=llamacp_model, 
-                system_prompt=SYSTEM_PROMPT,
-                tools=[
-                    get_current_directory,
-                    list_directory, 
-                    create_directory, 
-                    create_or_update_file, 
-                    read_file, 
-                    change_directory,
-                    read_data_from_url, 
-                    exa_search_tool
-                    ]
-            )
+    model=llamacp_model, 
+    system_prompt=SYSTEM_PROMPT,
+    tools=[
+        get_current_directory,
+        list_directory, 
+        create_directory, 
+        create_or_update_file, 
+        read_file, 
+        change_directory,
+        read_data_from_url, 
+        web_search  # Use the unified web search function
+    ]
+)
 
 def callAgent(
     prompt: str,
     message_history: List[ModelMessage] | None = None,
     deps: Deps | None = None,
-    ) -> str:
+) -> str:
     tool_error = None
 
     for attempt in range(1, TOOL_CALL_ERROR_MAX_RETRIES + 1):
