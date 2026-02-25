@@ -65,15 +65,21 @@ From root of the project (where .toml file exists)
     python3 -m pip install -e .
 #### PIP3 list to see cado
     pip3 list
-
 #### Create a script file cado.sh
+##### If using UV package manager (this needs a differnt setup not explained in this doc)
     #!/bin/bash
-    uv run /Users/ninja/Code/ML-AI/pydantic-agent/src/cado/main.py
+    uv run $HOME/<YOUR_CODE_DIR>/avcd-agent/src/cado/main.py
+##### If using python package manager
+    #!/bin/bash
+    source $HOME/<YOUR_CODE_DIR>/avcd-agent/venv/bin/activate
+    python3 $HOME/<YOUR_CODE_DIR>/avcd-agent/src/cado/main.py
 #### Save this to new directory 
     mkdir util_scripts
     cd util_scripts
     touch cado.sh
+##### Make the script executable
+    chmod +x cado.sh
 #### Add alias to PATH (bashrc or zshrc)
-    alias cado=/PATH_TO_/cado.sh
-#### Source bashrc or zshrc to access cado
+    alias cado=$HOME/PATH_TO_UTIL_SCRIPTS/cado.sh
+#### Open a new terminal or run "source ~/.bashrc" or "source ~/.zshrc" to access cado
     cado
