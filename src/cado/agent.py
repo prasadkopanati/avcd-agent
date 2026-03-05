@@ -15,6 +15,9 @@ import json
 import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
+import urllib.parse
+import subprocess
+from pydantic_ai import RunContext
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,6 +35,21 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "password123")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "qwen3")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://192.168.86.34:8083/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen3-Coder-30b")
+# MODEL_PROVIDER: "openai_compatible" (local/self-hosted), "openai" (OpenAI cloud), "anthropic"
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "openai_compatible")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Enumeration of known OpenAI-compatible (local/self-hosted) model names.
+# These are models you can run on a local inference server (e.g. LM Studio, Ollama, llama.cpp).
+# Add or remove entries to match the models available on your server.
+OPENAI_COMPATIBLE_MODELS: dict[str, str] = {
+    "Qwen3-Coder-30b":         "Qwen 3 Coder 30B  — large coding model (default)",
+    "Qwen3-Coder-Next":        "Qwen 3 Coder Next   — fast, lighter coding model",
+    "Qwen3-VL-32B":            "Qwen 3 Vision Model 32B        — large general-purpose model",
+    "Qwen3-VL-32B-8BIT":       "Qwen 3 Vision Model 32B 8BIT       — large general-purpose model",
+    "GLM47Flash-30b":          "GLM 4.7 Small model        — mid-size general-purpose model",
+    "Nemotron-30b":            "Nemotron 30B     — Nvidia's coding model",
+}
 
 # API settings
 API_KEY = os.getenv("API_KEY", "your_api_key_here")
@@ -42,7 +60,7 @@ DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 PORT = int(os.getenv("PORT", "3000"))
 
 # Web Search Settings
-# Search provider: "exa", "firecrawl", "tavily", "brave", "openserp", or "google_custom"
+# Search provider: "exa", "firecrawl", "tavily", "brave", or "google_custom"
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "exa")
 
 # Exa API
@@ -54,12 +72,10 @@ FIRECRAWL_BASE_URL = os.getenv("FIRECRAWL_BASE_URL", "https://api.firecrawl.dev"
 
 # Tavily API
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+TAVILY_API_BASE_URL = os.getenv("TAVILY_API_BASE_URL", "https://api.tavily.com")
 
 # Brave Search API
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
-
-# OpenSerp (self-hosted)
-OPENSERP_BASE_URL = os.getenv("OPENSERP_BASE_URL", "http://localhost:7000")
 
 # Google Custom Search API
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
@@ -68,6 +84,9 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 # Search configuration
 DEFAULT_SEARCH_NUM_RESULTS = int(os.getenv("DEFAULT_SEARCH_NUM_RESULTS", 5))
 SEARCH_QUERY_TYPE = os.getenv("SEARCH_QUERY_TYPE", "web")  # web, academic, news, etc.
+
+# External Knowledge Layer
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 @dataclass
 class Deps:
@@ -90,25 +109,57 @@ class ToolExecError(BaseModel):
     message: str
     attempted_input: dict
 
-llamacp_model = OpenAIChatModel(
-    model_name=MODEL_NAME, 
-    provider=OpenAIProvider(
-        base_url=OPENAI_BASE_URL,
-        api_key=OPENAI_API_KEY
+def _create_model():
+    """
+    Create the appropriate model instance based on MODEL_PROVIDER env var.
+    Supports: openai_compatible (local/self-hosted), openai (OpenAI cloud), anthropic
+    """
+    if MODEL_PROVIDER == "anthropic":
+        from pydantic_ai.models.anthropic import AnthropicModel
+        return AnthropicModel(MODEL_NAME, api_key=ANTHROPIC_API_KEY)
+    elif MODEL_PROVIDER == "openai":
+        return OpenAIChatModel(
+            MODEL_NAME,
+            provider=OpenAIProvider(api_key=OPENAI_API_KEY)
+        )
+    else:  # "openai_compatible" — local/self-hosted (default)
+        return OpenAIChatModel(
+            MODEL_NAME,
+            provider=OpenAIProvider(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+        )
+
+llamacp_model = _create_model()
+
+
+def build_openai_compatible_model(model_name: str) -> OpenAIChatModel:
+    """
+    Build an OpenAIChatModel instance for a given local/self-hosted model name.
+    Uses the same OPENAI_BASE_URL and OPENAI_API_KEY as the default model.
+    """
+    return OpenAIChatModel(
+        model_name,
+        provider=OpenAIProvider(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
     )
-)
 
 # Get current date and time in string format
 CURRENT_DATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-# Get current IP address by calling the IP Geolocation API
-IP_ADDRESS = requests.get("https://api.ipify.org?format=json").json()["ip"]
-# Get current geographic location by calling the IP Geolocation API in string format
-CURRENT_GEOGRAPHIC_LOCATION = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["city"]
-# Get current ISP by calling the IP Geolocation API in string format
-CURRENT_REGION = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["region"]
-# Get current country by calling the IP Geolocation API in string format
-CURRENT_COUNTRY = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json").json()["country"]
+# Get current IP and geographic location — gracefully degraded if offline
+try:
+    _ip_response = requests.get("https://api.ipify.org?format=json", timeout=5)
+    IP_ADDRESS = _ip_response.json().get("ip", "")
+    if IP_ADDRESS:
+        _geo = requests.get(f"https://ipinfo.io/{IP_ADDRESS}/json", timeout=5).json()
+        CURRENT_GEOGRAPHIC_LOCATION = _geo.get("city", "")
+        CURRENT_REGION = _geo.get("region", "")
+        CURRENT_COUNTRY = _geo.get("country", "")
+    else:
+        CURRENT_GEOGRAPHIC_LOCATION = CURRENT_REGION = CURRENT_COUNTRY = ""
+except Exception:
+    IP_ADDRESS = ""
+    CURRENT_GEOGRAPHIC_LOCATION = ""
+    CURRENT_REGION = ""
+    CURRENT_COUNTRY = ""
 
 # Abstract System Prompt into an applicaation wide constant and import the constant from the main module
 SYSTEM_PROMPT = (
@@ -140,14 +191,37 @@ SYSTEM_PROMPT = (
     "5. The read_file tool automatically normalizes paths, so you can use relative paths like ../sibling/file.txt or paths with .. and .\n"
     "6. Use absolute paths whenever possible for better reliability and clarity.\n"
     "\n\n"
+    "## Code Execution Instructions\n"
+    "- Use run_command to execute shell commands, run tests, install packages, or validate code.\n"
+    "- Always prefer running code to verify it works before telling the user it is done.\n"
+    "- Use working_dir to run commands in a specific directory.\n"
+    "- Common uses: 'python3 script.py', 'pytest tests/', 'pip install ...', 'git status'\n"
+    "\n\n"
     "## Web Search Instructions\n"
     "When searching the web for information:\n"
     f"- The current search provider is: {SEARCH_PROVIDER}\n"
-    "- Available search providers include: exa, firecrawl, tavily, brave, openserp, google_custom\n"
+    "- Available search providers: exa, firecrawl, tavily, brave, google_custom\n"
     "- Use the web_search tool for general queries\n"
-    "- For specific URLs, use the read_website tool\n"
-    "- Consider using multiple search providers for comprehensive results\n"
-    "- Always verify information from multiple sources when accuracy is critical"
+    "- For specific URLs, use the read_data_from_url tool\n"
+    "- Always verify information from multiple sources when accuracy is critical\n"
+    "\n\n"
+    "## External Knowledge Instructions\n"
+    "Use these tools selectively — only when the query benefits from authoritative,\n"
+    "version-specific, or security-aware information:\n"
+    "\n"
+    "- lookup_package_info: When the user asks about latest versions, changelogs, or\n"
+    "  whether a package exists. Supported registries: pypi (default), npm, cargo\n"
+    "\n"
+    "- search_github: When debugging errors that may be upstream bugs, finding official\n"
+    "  repos, or checking known issues/PRs.\n"
+    "  Supported search_type: repositories (default), issues, code\n"
+    "\n"
+    "- lookup_security_advisory: When the user mentions CVE/vulnerability/security,\n"
+    "  before recommending a new dependency, or during upgrade discussions.\n"
+    "  Supported ecosystems: PyPI (default), npm, crates.io, Go, Maven, NuGet, Packagist, RubyGems\n"
+    "\n"
+    "Do NOT call these tools for every request. Invoke only when the user intent\n"
+    "clearly benefits from authoritative, version-aware, or security-specific information."
 )
 
 # Configure logfire
@@ -168,20 +242,37 @@ def list_directory(directory:str) -> list[str]:
     contents= os.listdir(directory)
     return contents
 
-def create_directory(directory:str) -> None:
+def create_directory(ctx: RunContext[Deps], directory: str) -> str:
     """
     Create a directory
     """
+    if not ctx.deps.approve("create_directory", {"directory": directory}):
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="create_directory",
+                error_type="ApprovalDenied",
+                message=f"User denied permission to create directory: {directory}",
+                attempted_input={"directory": directory},
+            ).model_dump_json()
+        )
     os.makedirs(directory, exist_ok=True)
     return f"Directory {directory} created successfully"
 
-def create_or_update_file(file_path:str, content:str) -> None:
+def create_or_update_file(ctx: RunContext[Deps], file_path: str, content: str) -> str:
     """
     Create or update a file with the given content
     """
-    with open(file_path, "w") as file: 
+    if not ctx.deps.approve("create_or_update_file", {"file_path": file_path}):
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="create_or_update_file",
+                error_type="ApprovalDenied",
+                message=f"User denied permission to create/update file: {file_path}",
+                attempted_input={"file_path": file_path},
+            ).model_dump_json()
+        )
+    with open(file_path, "w") as file:
         file.write(content)
-    
     return f"File {file_path} created successfully"
 
 def read_file(file_path: str) -> str:
@@ -231,12 +322,21 @@ def read_file(file_path: str) -> str:
             ).model_dump_json()
         )
 
-def change_directory(directory: str) -> str:
+def change_directory(ctx: RunContext[Deps], directory: str) -> str:
     """
     Change the current working directory
     Use this tool to navigate between directories when you need to access files in different locations.
     You can use absolute paths (e.g., /home/user/project) or relative paths (e.g., ../sibling_dir).
     """
+    if not ctx.deps.approve("change_directory", {"directory": directory}):
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="change_directory",
+                error_type="ApprovalDenied",
+                message=f"User denied permission to change directory to: {directory}",
+                attempted_input={"directory": directory},
+            ).model_dump_json()
+        )
     try:
         # Normalize and resolve the path
         new_dir = os.path.abspath(os.path.normpath(directory))
@@ -278,6 +378,75 @@ def change_directory(directory: str) -> str:
                 attempted_input={"directory": directory},
             ).model_dump_json()
         )
+
+# ============== CODE EXECUTION ==============
+
+def run_command(ctx: RunContext[Deps], command: str, working_dir: str = None) -> str:
+    """
+    Execute a shell command and return its output (stdout + stderr combined).
+
+    Use this tool when:
+    - You need to run or test code you have written
+    - You need to install packages (pip install, npm install, uv add, etc.)
+    - You need to run tests (pytest, npm test, cargo test, etc.)
+    - You need to execute git commands
+    - You need to compile, lint, or build a project
+
+    Arguments:
+    - command: The shell command to execute (e.g., "python3 script.py", "pytest tests/")
+    - working_dir: Optional directory to run the command in. Defaults to current directory.
+
+    Returns combined stdout and stderr. Times out after 60 seconds.
+    Always prefer running code to verify it works before telling the user it is done.
+    """
+    resolved_dir = os.path.abspath(os.path.normpath(working_dir)) if working_dir else os.getcwd()
+
+    if not ctx.deps.approve("run_command", {"command": command, "working_dir": resolved_dir}):
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="run_command",
+                error_type="ApprovalDenied",
+                message=f"User denied permission to run command: {command}",
+                attempted_input={"command": command, "working_dir": resolved_dir},
+            ).model_dump_json()
+        )
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=resolved_dir,
+        )
+        output = ""
+        if result.stdout:
+            output += result.stdout
+        if result.stderr:
+            output += f"\n[stderr]\n{result.stderr}"
+        if not output.strip():
+            output = f"Command exited with code {result.returncode} (no output)"
+        return output[:10000]  # cap to avoid token overflow
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="run_command",
+                error_type="TimeoutExpired",
+                message=f"Command timed out after 60 seconds: {command}",
+                attempted_input={"command": command, "working_dir": resolved_dir},
+            ).model_dump_json()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="run_command",
+                error_type=type(e).__name__,
+                message=f"Command execution failed: {str(e)}",
+                attempted_input={"command": command, "working_dir": resolved_dir},
+            ).model_dump_json()
+        )
+
 
 # ============== WEB SEARCH IMPLEMENTATIONS ==============
 
@@ -367,10 +536,8 @@ def tavily_search_tool(query: str) -> List[Dict[str, Any]]:
     Returns search results with AI-optimized snippets.
     """
     try:
-        import requests
-        
         response = requests.post(
-            f"{os.getenv('TAVILY_API_BASE_URL', 'https://api.tavily.com')}/search",
+            f"{TAVILY_API_BASE_URL}/search",
             json={
                 "query": query,
                 "max_results": DEFAULT_SEARCH_NUM_RESULTS,
@@ -379,7 +546,7 @@ def tavily_search_tool(query: str) -> List[Dict[str, Any]]:
         )
         response.raise_for_status()
         data = response.json()
-        
+
         # Format results
         return [
             {
@@ -390,15 +557,6 @@ def tavily_search_tool(query: str) -> List[Dict[str, Any]]:
             }
             for result in data.get("results", [])
         ]
-    except ImportError:
-        raise RuntimeError(
-            ToolExecError(
-                tool_name="tavily_search_tool",
-                error_type="ImportError",
-                message="Requests library not available",
-                attempted_input={"query": query},
-            ).model_dump_json()
-        )
     except Exception as e:
         raise RuntimeError(
             ToolExecError(
@@ -421,8 +579,8 @@ def brave_search_tool(query: str) -> List[Dict[str, Any]]:
             "X-Subscription-Token": BRAVE_API_KEY
         }
         
-        params = {"q": query}
-        
+        params = {"q": query, "count": DEFAULT_SEARCH_NUM_RESULTS}
+
         response = requests.get(
             "https://api.search.brave.com/res/v1/web/search",
             headers=headers,
@@ -431,7 +589,7 @@ def brave_search_tool(query: str) -> List[Dict[str, Any]]:
         )
         response.raise_for_status()
         data = response.json()
-        
+
         # Format results
         results = []
         if "web" in data and "results" in data["web"]:
@@ -442,43 +600,14 @@ def brave_search_tool(query: str) -> List[Dict[str, Any]]:
                     "content": result.get("description", ""),
                     "snippets": result.get("snippets", [])
                 })
-        
-        return results[:DEFAULT_SEARCH_NUM_RESULTS]
+
+        return results
     except Exception as e:
         raise RuntimeError(
             ToolExecError(
                 tool_name="brave_search_tool",
                 error_type=type(e).__name__,
                 message=f"Brave search failed: {str(e)}",
-                attempted_input={"query": query},
-            ).model_dump_json()
-        )
-
-def openserp_search_tool(query: str) -> List[Dict[str, Any]]:
-    """
-    Searches the web using OpenSerp - self-hosted, open-source solution.
-    Supports multiple search engines (Google, Bing, DuckDuckGo, etc.).
-    """
-    try:
-        response = requests.get(
-            f"{OPENSERP_BASE_URL}/mega/search",
-            params={
-                "text": query,
-                "limit": DEFAULT_SEARCH_NUM_RESULTS,
-                "engines": os.getenv("OPENSERP_ENGINES", "google,bing,duckduckgo")
-            },
-            timeout=30
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        return data
-    except Exception as e:
-        raise RuntimeError(
-            ToolExecError(
-                tool_name="openserp_search_tool",
-                error_type=type(e).__name__,
-                message=f"OpenSerp search failed: {str(e)}",
                 attempted_input={"query": query},
             ).model_dump_json()
         )
@@ -537,7 +666,6 @@ def select_search_provider() -> callable:
         "firecrawl": firecrawl_search_tool,
         "tavily": tavily_search_tool,
         "brave": brave_search_tool,
-        "openserp": openserp_search_tool,
         "google_custom": google_custom_search_tool
     }
     
@@ -554,7 +682,6 @@ def select_search_provider() -> callable:
         "firecrawl": ["FIRECRAWL_API_KEY"],
         "tavily": ["TAVILY_API_KEY"],
         "brave": ["BRAVE_API_KEY"],
-        "openserp": [],
         "google_custom": ["GOOGLE_API_KEY", "GOOGLE_CSE_ID"]
     }
     
@@ -576,6 +703,304 @@ def web_search(query: str) -> List[Dict[str, Any]]:
     """
     search_func = select_search_provider()
     return search_func(query)
+
+# ============== EXTERNAL KNOWLEDGE TOOLS ==============
+
+def lookup_package_info(package_name: str, registry: str = "pypi") -> Dict[str, Any]:
+    """
+    Look up a package in an official package registry to get the latest version,
+    description, homepage URL, and changelog URL.
+
+    Use this tool when:
+    - The user asks about the latest version of a library or package
+    - You need to verify a package exists before recommending it
+    - The user asks for the homepage, documentation, or changelog of a package
+    - Keywords appear: 'latest version', 'current version', 'changelog', 'what version'
+
+    Supported registries:
+    - pypi: Python packages (https://pypi.org)
+    - npm: Node.js packages (https://registry.npmjs.org)
+    - cargo: Rust crates (https://crates.io)
+    """
+    try:
+        registry_lower = registry.lower().strip()
+
+        if registry_lower == "pypi":
+            url = f"https://pypi.org/pypi/{package_name}/json"
+            response = requests.get(url, timeout=15)
+            if response.status_code == 404:
+                return {"error": f"Package '{package_name}' not found on PyPI."}
+            response.raise_for_status()
+            data = response.json()
+            info = data.get("info", {})
+            return {
+                "registry": "pypi",
+                "package": package_name,
+                "latest_version": info.get("version"),
+                "summary": info.get("summary"),
+                "homepage": info.get("home_page") or info.get("project_url"),
+                "project_urls": info.get("project_urls", {}),
+                "requires_python": info.get("requires_python"),
+                "license": info.get("license"),
+                "author": info.get("author"),
+                "pypi_url": f"https://pypi.org/project/{package_name}/",
+            }
+
+        elif registry_lower == "npm":
+            # URL-encode package name to handle scoped packages like @types/node
+            encoded_name = urllib.parse.quote(package_name, safe="")
+            url = f"https://registry.npmjs.org/{encoded_name}"
+            response = requests.get(url, timeout=15)
+            if response.status_code == 404:
+                return {"error": f"Package '{package_name}' not found on npm."}
+            response.raise_for_status()
+            data = response.json()
+            latest_tag = data.get("dist-tags", {}).get("latest", "")
+            latest_info = data.get("versions", {}).get(latest_tag, {})
+            repository = latest_info.get("repository", {})
+            return {
+                "registry": "npm",
+                "package": package_name,
+                "latest_version": latest_tag,
+                "summary": data.get("description"),
+                "homepage": latest_info.get("homepage") or data.get("homepage"),
+                "repository": repository.get("url") if isinstance(repository, dict) else repository,
+                "license": latest_info.get("license"),
+                "npm_url": f"https://www.npmjs.com/package/{package_name}",
+            }
+
+        elif registry_lower == "cargo":
+            url = f"https://crates.io/api/v1/crates/{package_name}"
+            # crates.io requires a User-Agent header per their API policy
+            headers = {"User-Agent": "avcd-agent/1.0 (coding-assistant)"}
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 404:
+                return {"error": f"Crate '{package_name}' not found on crates.io."}
+            response.raise_for_status()
+            data = response.json()
+            crate_info = data.get("crate", {})
+            return {
+                "registry": "cargo",
+                "package": package_name,
+                "latest_version": crate_info.get("newest_version"),
+                "max_stable_version": crate_info.get("max_stable_version"),
+                "summary": crate_info.get("description"),
+                "homepage": crate_info.get("homepage"),
+                "repository": crate_info.get("repository"),
+                "documentation": crate_info.get("documentation"),
+                "downloads": crate_info.get("downloads"),
+                "crates_io_url": f"https://crates.io/crates/{package_name}",
+            }
+
+        else:
+            return {
+                "error": f"Unknown registry '{registry}'. Supported values are: pypi, npm, cargo"
+            }
+
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="lookup_package_info",
+                error_type=type(e).__name__,
+                message=f"Failed to look up package '{package_name}' on registry '{registry}': {str(e)}",
+                attempted_input={"package_name": package_name, "registry": registry},
+            ).model_dump_json()
+        )
+
+
+def search_github(query: str, search_type: str = "repositories") -> List[Dict[str, Any]]:
+    """
+    Search GitHub for repositories, issues, or code using the GitHub Search API.
+
+    Use this tool when:
+    - Debugging errors to find known GitHub issues or bug reports
+    - Looking for reference implementations or example code
+    - Checking if a bug has been reported upstream
+    - Finding the official repository for a library
+    - Keywords appear: 'bug', 'issue', 'error', 'known problem', 'workaround'
+
+    Arguments:
+    - query: The search query. For issues, include the repo for best results
+             (e.g., "memory leak repo:pydantic/pydantic-ai").
+    - search_type: One of "repositories", "issues", or "code". Defaults to "repositories".
+
+    Set GITHUB_TOKEN environment variable for 5000 requests/hr (vs 60/hr unauthenticated).
+    """
+    try:
+        valid_types = {"repositories", "issues", "code"}
+        if search_type not in valid_types:
+            return [{"error": f"Invalid search_type '{search_type}'. Use one of: {', '.join(sorted(valid_types))}"}]
+
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+        params = {"q": query, "per_page": 8, "sort": "best-match"}
+        url = f"https://api.github.com/search/{search_type}"
+
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+
+        if response.status_code == 403:
+            rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
+            return [{"error": f"GitHub API rate limit reached (remaining: {rate_remaining}). Set GITHUB_TOKEN for 5000 requests/hour."}]
+        if response.status_code == 422:
+            return [{"error": f"GitHub search query is invalid: {response.json().get('message', 'unknown')}"}]
+
+        response.raise_for_status()
+        items = response.json().get("items", [])
+
+        if search_type == "repositories":
+            return [
+                {
+                    "name": item.get("full_name"),
+                    "description": item.get("description"),
+                    "url": item.get("html_url"),
+                    "stars": item.get("stargazers_count"),
+                    "language": item.get("language"),
+                    "topics": item.get("topics", []),
+                    "updated_at": item.get("updated_at"),
+                    "open_issues_count": item.get("open_issues_count"),
+                }
+                for item in items
+            ]
+
+        elif search_type == "issues":
+            return [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("html_url"),
+                    "state": item.get("state"),
+                    "body_preview": (item.get("body") or "")[:500],
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "labels": [label.get("name") for label in item.get("labels", [])],
+                    "comments": item.get("comments"),
+                    "repository": item.get("repository_url", "").replace("https://api.github.com/repos/", ""),
+                    "is_pull_request": "pull_request" in item,
+                }
+                for item in items
+            ]
+
+        elif search_type == "code":
+            return [
+                {
+                    "name": item.get("name"),
+                    "path": item.get("path"),
+                    "url": item.get("html_url"),
+                    "repository": item.get("repository", {}).get("full_name"),
+                    "repository_url": item.get("repository", {}).get("html_url"),
+                    "score": item.get("score"),
+                }
+                for item in items
+            ]
+
+        return []
+
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="search_github",
+                error_type=type(e).__name__,
+                message=f"GitHub search failed for query '{query}' (type: {search_type}): {str(e)}",
+                attempted_input={"query": query, "search_type": search_type},
+            ).model_dump_json()
+        )
+
+
+def lookup_security_advisory(package_name: str, ecosystem: str = "PyPI") -> List[Dict[str, Any]]:
+    """
+    Query the OSV.dev database for known security vulnerabilities (CVEs) affecting
+    a given package in a specific ecosystem.
+
+    Use this tool when:
+    - The user mentions security, CVE, vulnerability, or exploit
+    - You are about to add or recommend a dependency
+    - The user asks if a package version is safe to use
+    - A package upgrade is being considered and security context is needed
+
+    Supported ecosystems: PyPI, npm, crates.io, Go, Maven, NuGet, Packagist, RubyGems
+    Common aliases are accepted: python, node, rust, golang, java, dotnet, php, ruby
+
+    An empty result means no known vulnerabilities were found in OSV.dev — this does
+    not guarantee the package is fully secure.
+    """
+    try:
+        # Normalize common ecosystem aliases to OSV.dev expected values
+        ecosystem_map = {
+            "python": "PyPI", "pypi": "PyPI",
+            "node": "npm", "nodejs": "npm", "npm": "npm",
+            "rust": "crates.io", "cargo": "crates.io", "crates.io": "crates.io",
+            "go": "Go", "golang": "Go",
+            "java": "Maven", "maven": "Maven",
+            "nuget": "NuGet", "dotnet": "NuGet",
+            "php": "Packagist", "packagist": "Packagist",
+            "ruby": "RubyGems", "rubygems": "RubyGems",
+        }
+        normalized_ecosystem = ecosystem_map.get(ecosystem.lower(), ecosystem)
+
+        payload = {
+            "package": {
+                "name": package_name,
+                "ecosystem": normalized_ecosystem,
+            }
+        }
+
+        response = requests.post(
+            "https://api.osv.dev/v1/query",
+            json=payload,
+            timeout=15,
+        )
+        response.raise_for_status()
+        vulns = response.json().get("vulns", [])
+
+        if not vulns:
+            return [{"message": f"No known vulnerabilities found for '{package_name}' in ecosystem '{normalized_ecosystem}' on OSV.dev."}]
+
+        results = []
+        for vuln in vulns[:10]:  # Cap at 10 to avoid context overflow
+            # Extract affected version ranges
+            affected_ranges = []
+            for affected in vuln.get("affected", []):
+                for r in affected.get("ranges", []):
+                    events = r.get("events", [])
+                    introduced = next((e.get("introduced") for e in events if "introduced" in e), None)
+                    fixed = next((e.get("fixed") for e in events if "fixed" in e), None)
+                    affected_ranges.append({"introduced": introduced, "fixed": fixed})
+
+            severity_list = vuln.get("severity", [])
+            severity = severity_list[0].get("score") if severity_list else None
+
+            aliases = vuln.get("aliases", [])
+            cve_ids = [a for a in aliases if a.startswith("CVE-")]
+
+            results.append({
+                "id": vuln.get("id"),
+                "cve_ids": cve_ids,
+                "summary": vuln.get("summary"),
+                "details": (vuln.get("details") or "")[:600],
+                "severity": severity,
+                "published": vuln.get("published"),
+                "modified": vuln.get("modified"),
+                "affected_ranges": affected_ranges,
+                "references": [ref.get("url") for ref in vuln.get("references", [])[:3]],
+                "osv_url": f"https://osv.dev/vulnerability/{vuln.get('id')}",
+            })
+
+        return results
+
+    except Exception as e:
+        raise RuntimeError(
+            ToolExecError(
+                tool_name="lookup_security_advisory",
+                error_type=type(e).__name__,
+                message=f"Security advisory lookup failed for '{package_name}' (ecosystem: {ecosystem}): {str(e)}",
+                attempted_input={"package_name": package_name, "ecosystem": ecosystem},
+            ).model_dump_json()
+        )
+
 
 # ============== WEBSITE READING FUNCTIONS ==============
 
@@ -759,17 +1184,22 @@ def read_data_from_url(url: str) -> str:
 # ============== AGENT INITIALIZATION ==============
 
 avcCodingAgent = Agent(
-    model=llamacp_model, 
+    model=llamacp_model,
+    deps_type=Deps,
     system_prompt=SYSTEM_PROMPT,
     tools=[
         get_current_directory,
-        list_directory, 
-        create_directory, 
-        create_or_update_file, 
-        read_file, 
+        list_directory,
+        create_directory,
+        create_or_update_file,
+        read_file,
         change_directory,
-        read_data_from_url, 
-        web_search  # Use the unified web search function
+        run_command,
+        read_data_from_url,
+        web_search,
+        lookup_package_info,
+        search_github,
+        lookup_security_advisory,
     ]
 )
 
@@ -777,13 +1207,20 @@ def callAgent(
     prompt: str,
     message_history: List[ModelMessage] | None = None,
     deps: Deps | None = None,
+    model_name: str | None = None,
 ) -> str:
+    # Build a per-call model override when a non-default model is selected.
+    # Only applies to openai_compatible provider; cloud providers use their own keys.
+    model_override = None
+    if model_name and model_name != MODEL_NAME and MODEL_PROVIDER == "openai_compatible":
+        model_override = build_openai_compatible_model(model_name)
+
     tool_error = None
 
     for attempt in range(1, TOOL_CALL_ERROR_MAX_RETRIES + 1):
         try:
             result = avcCodingAgent.run_sync(
-                prompt, message_history=message_history, deps=deps
+                prompt, message_history=message_history, deps=deps, model=model_override
             )
             return result
         except RuntimeError as e:
